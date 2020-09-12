@@ -1,6 +1,6 @@
 use std::path::Path;
-use crate::texture;
-use crate::gpu;
+use crate::ndjinn::texture;
+use crate::ndjinn::gpu;
 
 pub trait Vertex {
 	fn desc<'a>() -> wgpu::VertexBufferDescriptor<'a>;

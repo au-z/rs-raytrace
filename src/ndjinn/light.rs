@@ -1,4 +1,4 @@
-use crate::model;
+use crate::ndjinn::model;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
