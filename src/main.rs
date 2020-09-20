@@ -9,15 +9,38 @@
 // mod ndjinn;
 // use crate::ndjinn::Ndjinn;
 
-mod rt;
-use rand::prelude::*;
 use cgmath::Vector3;
 use cgmath::prelude::*;
+use rand::prelude::*;
+mod rt;
+use rt::{RTOCollection, RTO, ray::Ray, sphere::Sphere, camera::Camera};
+use rt::material::{Lambertian, Metal, Dielectric};
 
-fn color(ray: &rt::Ray, world: &dyn rt::RTO) -> Vector3<f32> {
-	match world.hit(ray, 0.0, f32::MAX) {
+const WIDTH: u32 = 80;
+const MAX_BOUNCES: u32 = 12;
+const AA_SAMPLES: u32 = 50;
+const HEIGHT: u32 = 80;
+
+fn color<'a, 'b>(ray: &'b Ray, world: &dyn RTO<'a>, depth: u32) -> Vector3<f32> {
+	match world.hit(&ray, 0.001, f32::MAX) {
 		Some(hit) => {
-			return 0.5 * Vector3::new(hit.normal.x + 1.0, hit.normal.y + 1.0, hit.normal.z + 1.0);
+			if depth < MAX_BOUNCES {
+				match hit.material.scatter(&ray, &hit) {
+					Some((scattered_ray, attenuation)) => {
+						let scattered_color = color(&scattered_ray, world, depth+1);
+						return (
+							attenuation.x * scattered_color.x,
+							attenuation.y * scattered_color.y,
+							attenuation.z * scattered_color.z,
+						).into();
+					}
+					_ => {
+						return (0.0, 0.0, 0.0).into();
+					}
+				}
+			} else {
+				return (0.0, 0.0, 0.0).into();
+			}
 		},
 		_ => {
 			let unit_dir = ray.direction.normalize();
@@ -28,20 +51,82 @@ fn color(ray: &rt::Ray, world: &dyn rt::RTO) -> Vector3<f32> {
 }
 
 fn main() {
-	let w = 200;
-	let h = 100;
-	let samples = 20;
+	let mut rng = rand::thread_rng();
+	let w = WIDTH;
+	let h = HEIGHT;
+	let samples = AA_SAMPLES;
   println!("P3\n{} {}\n255", w, h);
 
-	let camera = rt::camera::Camera::new();
+	let origin = Vector3::<f32>::new(11.0, 2.0, 3.0);
+	let target = Vector3::<f32>::new(0.0, 0.0, -1.0);
+	let aspect = w as f32 / h as f32;
+	let focus = (origin - target).magnitude();
+	let camera = Camera::new(origin, target, 45.0, aspect, 0.0, focus);
 
-	let objects = vec!(
-		Box::new(rt::Sphere::new((0.0, 0.0, -1.0).into(), 0.5)) as Box<dyn rt::RTO>,
-		Box::new(rt::Sphere::new((0.0, -100.5, -1.0).into(), 100.0)) as Box<dyn rt::RTO>,
+	let mut objects = vec!(
+		Box::new(Sphere::new((0.0, -1000.0, -1.0).into(), 1000.0, Box::new(Lambertian {
+			albedo: (0.5, 0.5, 0.5).into(),
+		}))) as Box<dyn RTO>,
 	);
-	let world = rt::RTOCollection::new(&objects);
 
-	let mut rng = rand::thread_rng();
+	for a in -11..11 {
+		for b in -11..11 {
+			let mat_code: f32 = rng.gen();
+			let center = Vector3::<f32>::new(a as f32 + 0.9 * rng.gen::<f32>(), 0.2, b as f32 + 0.9 * rng.gen::<f32>());
+			if (center - Vector3::<f32>::new(4.0, 0.2, 0.0)).magnitude() > 0.9 {
+				if mat_code < 0.7 { // diffuse
+					objects.push(Box::new(Sphere::new(center, 0.2, Box::new(Lambertian {
+						albedo: Vector3::<f32>::new(rng.gen::<f32>() * rng.gen::<f32>(), rng.gen::<f32>() * rng.gen::<f32>(), rng.gen::<f32>() * rng.gen::<f32>()),
+					}))) as Box<dyn RTO>);
+				} else if mat_code < 0.9 { // metal
+					objects.push(Box::new(Sphere::new(center, 0.2, Box::new(Metal {
+						albedo: Vector3::<f32>::new(0.5 * (1.0 + rng.gen::<f32>()), 0.5 * (1.0 + rng.gen::<f32>()), 0.5 * (1.0 + rng.gen::<f32>())),
+						roughness: 0.5 * (1.0 + rng.gen::<f32>()),
+					}))) as Box<dyn RTO>);
+				} else { // glass
+					objects.push(Box::new(Sphere::new(center, 0.2, Box::new(Dielectric {
+						index: 1.5,
+					}))) as Box<dyn RTO>);
+				}
+			}
+		}
+	}
+
+	objects.push(Box::new(Sphere::new(Vector3::<f32>::new(0.0, 1.0, 0.0), 1.0, Box::new(Dielectric {
+		index: 1.5,
+	}))) as Box<dyn RTO>);
+	objects.push(Box::new(Sphere::new(Vector3::<f32>::new(-4.0, 1.0, 0.0), 1.0, Box::new(Lambertian {
+		albedo: (0.4, 0.2, 0.1).into(),
+	}))) as Box<dyn RTO>);
+	objects.push(Box::new(Sphere::new(Vector3::<f32>::new(4.0, 1.0, 0.0), 1.0, Box::new(Metal {
+		albedo: (0.7, 0.6, 0.5).into(),
+		roughness: 0.0,
+	}))) as Box<dyn RTO>);
+
+	let world = RTOCollection::new(objects);
+
+	// let world = RTOCollection::new(vec!(
+	// 	// FLOOR
+	// 	Box::new(Sphere::new((0.0, -100.5, -1.0).into(), 100.0, Box::new(Lambertian {
+	// 		albedo: (0.04, 0.06, 0.09).into(),
+	// 	}))) as Box<dyn RTO>,
+	// 	// LEFT
+	// 	Box::new(Sphere::new((-1.0, 0.0, -1.0).into(), 0.5, Box::new(Dielectric {
+	// 		index: 1.5,
+	// 	}))) as Box<dyn RTO>,
+	// 	Box::new(Sphere::new((-1.0, 0.0, -1.0).into(), -0.48, Box::new(Dielectric {
+	// 		index: 1.5,
+	// 	}))) as Box<dyn RTO>,
+	// 	// CENTER
+	// 	Box::new(Sphere::new((0.0, 0.0, -1.0).into(), 0.5, Box::new(Lambertian {
+	// 		albedo: (0.1, 0.2, 0.5).into(),
+	// 	}))) as Box<dyn RTO>,
+	// 	// RIGHT
+	// 	Box::new(Sphere::new((1.0, 0.0, -1.0).into(), 0.5, Box::new(Metal::new(
+	// 		(0.8, 0.6, 0.3).into(),
+	// 		0.0,
+	// 	)))) as Box<dyn RTO>,
+	// ));
 
 	for j in (0..h-1).rev() {
 		for i in 0..w {
@@ -53,12 +138,15 @@ fn main() {
 				let v = (j as f32 + rand_v) / h as f32;
 	
 				let ray = camera.get_ray(u, v);
-				col += color(&ray, &world);
+				col += color(&ray, &world, 0);
 			}
 			col /= samples as f32;
-			let r = (256.0 * col.x) as u32;
-			let g = (256.0 * col.y) as u32;
-			let b = (256.0 * col.z) as u32;
+			// gamma correction
+			col = (col.x.powf(0.5), col.y.powf(0.5), col.z.powf(0.5)).into();
+
+			let r = (255.99 * col.x) as u32;
+			let g = (255.99 * col.y) as u32;
+			let b = (255.99 * col.z) as u32;
 			println!("{} {} {}", r, g, b);
 		}
 	}
